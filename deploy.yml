@@ -1,4 +1,0 @@
-# 统一部署目标（按顺序执行）
-# type: tencent_ssl | apigateway | local | ssh
-# 密钥仍放 .env；这里只描述「部署到哪里」
-targets: []

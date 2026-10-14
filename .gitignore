@@ -1,4 +1,5 @@
 .env
+deploy.yml
 cert-data/
 deploy-ssl/
 ssh/
@@ -13,4 +14,5 @@ dist/
 .idea/
 .vscode/
 *.exe
-tencent-cert-auto
+# only ignore locally built binary at repo root (not cmd/tencent-cert-auto/)
+/tencent-cert-auto
