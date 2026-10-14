@@ -1,0 +1,31 @@
+services:
+  tencent-cert-auto:
+    build:
+      context: .
+      platforms:
+        - ${DOCKER_PLATFORM:-linux/amd64}
+      args:
+        GO_IMAGE: ${GO_IMAGE:-golang:1.26-alpine}
+        RUNTIME_IMAGE: ${RUNTIME_IMAGE:-alpine:3.19}
+    image: tencent-cert-auto:latest
+    platform: ${DOCKER_PLATFORM:-linux/amd64}
+    container_name: tencent-cert-auto
+    restart: always
+    env_file:
+      - .env
+    environment:
+      CERT_DIR: /app/cert-data
+      DEPLOY_TARGETS_FILE: /app/deploy.yml
+      TZ: Asia/Shanghai
+    volumes:
+      - ./cert-data:/app/cert-data
+      - ./deploy.yml:/app/deploy.yml:ro
+      - ./ssh:/app/ssh:ro
+      - ./deploy-ssl:/deploy/ssl
+      # - /var/run/docker.sock:/var/run/docker.sock
+      - /etc/localtime:/etc/localtime:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

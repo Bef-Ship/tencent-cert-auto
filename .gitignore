@@ -1,0 +1,16 @@
+.env
+cert-data/
+deploy-ssl/
+ssh/
+*.pem
+id_rsa
+id_ed25519
+*.pem
+*.crt
+*.key
+bin/
+dist/
+.idea/
+.vscode/
+*.exe
+tencent-cert-auto

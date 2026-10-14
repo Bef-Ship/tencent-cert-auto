@@ -1,0 +1,38 @@
+# 统一部署目标 — 复制为 deploy.yml 后按环境修改
+# 密钥（TENCENT_* / SSH 私钥）不进本文件；私钥路径指向容器内挂载文件
+#
+# 执行顺序建议：
+#   1. tencent_ssl   上传证书（CDN 依赖控制台自动推送）
+#   2. apigateway    绑定 API 网关自定义域名
+#   3. local / ssh   部署到轻量/CVM/同机 Nginx
+
+targets:
+  # 上传至腾讯云 SSL 证书平台
+  - name: ssl
+    type: tencent_ssl
+    alias_prefix: example-wildcard-auto
+
+  # API 网关自定义域名（自动使用上一步的 CertificateId）
+  - name: apigw-api
+    type: apigateway
+    service_id: service-xxxx
+    domain: api.example.com
+
+  # 与 cert-auto 同机（直接写文件 + reload，不走 SSH）
+  - name: api-local
+    type: local
+    cert_path: /deploy/ssl/fullchain.pem
+    key_path: /deploy/ssl/privkey.pem
+    reload_cmd: "docker exec nginx nginx -s reload"
+
+  # 远程轻量 / CVM
+  - name: develop-api
+    type: ssh
+    host: 43.142.106.15
+    port: 22
+    user: root
+    private_key: /app/ssh/id_rsa
+    # known_hosts: /app/ssh/known_hosts
+    cert_path: /etc/nginx/ssl/fullchain.pem
+    key_path: /etc/nginx/ssl/privkey.pem
+    reload_cmd: "nginx -s reload"
