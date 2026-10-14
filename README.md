@@ -78,4 +78,46 @@ internal/deploy/     # 统一部署（ssl / apigw / local / ssh）
 internal/notify/     # 消息推送
 internal/app/        # 调度
 deploy.example.yml   # 部署目标示例
+.github/workflows/   # 推送镜像到腾讯云 CCR
+```
+
+## CI：推送到腾讯云 CCR
+
+推送到 `main`/`master`、打 `v*` tag，或手动 `workflow_dispatch` 时，Actions 会构建多架构镜像并推送到腾讯云容器镜像服务（个人版 CCR）。
+
+### 1. 控制台准备
+
+1. 开通 [容器镜像服务](https://console.cloud.tencent.com/tcr) 个人版，初始化登录密码  
+2. 创建命名空间（Namespace）
+
+### 2. GitHub 仓库配置
+
+**Secrets**（Settings → Secrets and variables → Actions → Secrets）：
+
+| Name | 说明 |
+|------|------|
+| `CCR_USERNAME` | 腾讯云账号 UIN（数字账号 ID） |
+| `CCR_PASSWORD` | CCR 登录密码（控制台初始化的那个） |
+
+**Variables**（同页 → Variables）：
+
+| Name | 必填 | 说明 |
+|------|------|------|
+| `CCR_NAMESPACE` | 是 | 镜像命名空间 |
+| `CCR_REGISTRY` | 否 | 默认 `ccr.ccs.tencentyun.com`；企业版填实例域名 |
+| `CCR_IMAGE_NAME` | 否 | 默认 `tencent-cert-auto` |
+
+### 3. 镜像地址示例
+
+```text
+ccr.ccs.tencentyun.com/<CCR_NAMESPACE>/tencent-cert-auto:latest
+ccr.ccs.tencentyun.com/<CCR_NAMESPACE>/tencent-cert-auto:sha-<short>
+ccr.ccs.tencentyun.com/<CCR_NAMESPACE>/tencent-cert-auto:v1.0.0   # tag 推送时
+```
+
+服务器拉取：
+
+```bash
+docker login ccr.ccs.tencentyun.com -u <UIN>
+docker pull ccr.ccs.tencentyun.com/<namespace>/tencent-cert-auto:latest
 ```
