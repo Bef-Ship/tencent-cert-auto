@@ -2,15 +2,45 @@
 # 密钥（TENCENT_* / SSH 私钥）不进本文件；私钥路径指向容器内挂载文件
 #
 # 执行顺序建议：
-#   1. tencent_ssl   上传证书（CDN 依赖控制台自动推送）
-#   2. apigateway    绑定 API 网关自定义域名
-#   3. local / ssh   部署到轻量/CVM/同机 Nginx
+#   1. tencent_ssl   上传证书到 SSL 证书平台（拿到 CertificateId）
+#   2. cdn / clb     通过 API 部署到 CDN / CLB（上传证书不会自动推送）
+#   3. apigateway    绑定 API 网关自定义域名
+#   4. local / ssh   部署到轻量/CVM/同机 Nginx（真实 SSH，不是腾讯云 API）
 
 targets:
   # 上传至腾讯云 SSL 证书平台
   - name: ssl
     type: tencent_ssl
     alias_prefix: example-wildcard-auto
+
+  # CDN：ssl.DeployCertificateInstance（ResourceType=cdn）
+  # 支持 domain 单域名，或 domains 多域名；https_billing: on|off（默认 off）
+  - name: cdn-sites
+    type: cdn
+    domains:
+      - www.example.com
+      - static.example.com
+    # https_billing: "off"
+    # certificate_id:  # 默认用本轮 tencent_ssl 返回值
+
+  # CLB：ssl.DeployCertificateInstance（ResourceType=clb）
+  # Instance 格式：LoadBalancerId|ListenerId[|Domain]
+  #   - 开启 SNI 的七层监听器：必须带 Domain
+  #   - 未开 SNI / 四层监听器：只需 lb|lbl
+  # region 默认用 TENCENT_REGION，须与负载均衡所在地域一致
+  - name: clb-https
+    type: clb
+    # region: ap-shanghai
+    load_balancer_id: lb-xxxx
+    listener_id: lbl-yyyy
+    domain: www.example.com
+    # 或多监听器：
+    # listeners:
+    #   - load_balancer_id: lb-xxxx
+    #     listener_id: lbl-yyyy
+    #     domain: www.example.com
+    #   - load_balancer_id: lb-xxxx
+    #     listener_id: lbl-zzzz
 
   # API 网关自定义域名（自动使用上一步的 CertificateId）
   - name: apigw-api
@@ -25,7 +55,8 @@ targets:
     key_path: /deploy/ssl/privkey.pem
     reload_cmd: "docker exec nginx nginx -s reload"
 
-  # 远程轻量 / CVM
+  # 远程轻量 / CVM：真实 SSH/SFTP，不是腾讯云 API
+  # （云产品请用 cdn / clb / apigateway；自建 Nginx 用 ssh）
   - name: develop-api
     type: ssh
     host: 43.142.106.15

@@ -39,7 +39,7 @@ func New(targetsFile string, creds CloudCreds, defaultAlias string) (*Runner, er
 }
 
 // DeployAll runs every target sequentially. Earlier tencent_ssl cert IDs
-// are reused by following apigateway targets unless certificate_id is set.
+// are reused by following cdn / clb / apigateway targets unless certificate_id is set.
 func (r *Runner) DeployAll(certPEM, keyPEM []byte) (*Result, error) {
 	if len(r.targets) == 0 {
 		slog.Info("no deploy targets configured, skip")
@@ -77,6 +77,26 @@ func (r *Runner) deployOne(t Target, certPEM, keyPEM []byte, result *Result) err
 		}
 		result.CertificateID = id
 		return nil
+
+	case TypeCDN:
+		if r.tencent == nil {
+			return fmt.Errorf("tencent client not initialized")
+		}
+		certID := t.CertificateID
+		if certID == "" {
+			certID = result.CertificateID
+		}
+		return r.tencent.deployCDN(t, certID)
+
+	case TypeCLB:
+		if r.tencent == nil {
+			return fmt.Errorf("tencent client not initialized")
+		}
+		certID := t.CertificateID
+		if certID == "" {
+			certID = result.CertificateID
+		}
+		return r.tencent.deployCLB(t, certID)
 
 	case TypeAPIGateway:
 		if r.tencent == nil {

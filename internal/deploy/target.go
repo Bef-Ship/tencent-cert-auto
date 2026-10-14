@@ -10,34 +10,58 @@ import (
 
 // Target types — all destinations live in one deploy.yml.
 const (
-	TypeTencentSSL  = "tencent_ssl" // upload to Tencent SSL platform (CDN auto-push)
-	TypeAPIGateway  = "apigateway"  // bind cert to API Gateway custom domain
-	TypeLocal       = "local"       // same host: write files + reload
-	TypeSSH         = "ssh"         // remote host: SFTP + reload
+	TypeTencentSSL = "tencent_ssl" // upload to Tencent SSL certificate platform
+	TypeCDN        = "cdn"         // deploy cert to CDN domains via API
+	TypeCLB        = "clb"         // deploy cert to CLB listeners via API
+	TypeAPIGateway = "apigateway"  // bind cert to API Gateway custom domain
+	TypeLocal      = "local"       // same host: write files + reload
+	TypeSSH        = "ssh"         // remote host: SFTP + reload (not Tencent API)
 )
+
+// CLBListener is one CLB HTTPS listener binding for DeployCertificateInstance.
+// Format: LoadBalancerId|ListenerId[|Domain] — Domain required when SNI is on.
+type CLBListener struct {
+	LoadBalancerID string `yaml:"load_balancer_id"`
+	ListenerID     string `yaml:"listener_id"`
+	Domain         string `yaml:"domain"` // optional: SNI domain on L7 listener
+}
 
 // Target is one deploy destination.
 type Target struct {
 	Name string `yaml:"name"`
-	Type string `yaml:"type"` // tencent_ssl | apigateway | local | ssh
+	Type string `yaml:"type"` // tencent_ssl | cdn | clb | apigateway | local | ssh
 
 	// tencent_ssl
 	AliasPrefix string `yaml:"alias_prefix"`
 
-	// apigateway
-	ServiceID string `yaml:"service_id"`
-	Domain    string `yaml:"domain"`
+	// cdn / apigateway / clb shared
+	Domain string `yaml:"domain"`
+	// Domains optional multi-domain list for cdn (merged with domain)
+	Domains []string `yaml:"domains"`
 	// CertificateID optional; empty uses last tencent_ssl upload in this run
 	CertificateID string `yaml:"certificate_id"`
-	NetType       string `yaml:"net_type"` // default OUTER
-	Protocol      string `yaml:"protocol"` // default https
+	// Region optional override (CLB requires region matching the LB)
+	Region string `yaml:"region"`
+
+	// cdn: HTTPS billing switch passed to DeployCertificateInstance (on|off)
+	HTTPSBilling string `yaml:"https_billing"`
+
+	// clb: single listener shorthand and/or listeners list
+	LoadBalancerID string        `yaml:"load_balancer_id"`
+	ListenerID     string        `yaml:"listener_id"`
+	Listeners      []CLBListener `yaml:"listeners"`
+
+	// apigateway
+	ServiceID string `yaml:"service_id"`
+	NetType   string `yaml:"net_type"` // default OUTER
+	Protocol  string `yaml:"protocol"` // default https
 
 	// local / ssh shared paths
 	CertPath  string `yaml:"cert_path"`
 	KeyPath   string `yaml:"key_path"`
 	ReloadCmd string `yaml:"reload_cmd"`
 
-	// ssh
+	// ssh — real SSH/SFTP to CVM/Lighthouse nginx; not Tencent Cloud API
 	Host       string `yaml:"host"`
 	Port       int    `yaml:"port"`
 	User       string `yaml:"user"`
@@ -104,6 +128,32 @@ func (t *Target) normalize() error {
 	switch t.Type {
 	case TypeTencentSSL:
 		return nil
+	case TypeCDN:
+		t.Domains = mergeDomains(t.Domain, t.Domains)
+		if len(t.Domains) == 0 {
+			return fmt.Errorf("cdn requires domain or domains")
+		}
+		t.Domain = t.Domains[0]
+		switch strings.ToLower(strings.TrimSpace(t.HTTPSBilling)) {
+		case "", "off":
+			t.HTTPSBilling = "off"
+		case "on":
+			t.HTTPSBilling = "on"
+		default:
+			return fmt.Errorf("cdn https_billing must be on or off")
+		}
+		return nil
+	case TypeCLB:
+		t.Listeners = mergeCLBListeners(t)
+		if len(t.Listeners) == 0 {
+			return fmt.Errorf("clb requires listeners or load_balancer_id+listener_id")
+		}
+		for i, l := range t.Listeners {
+			if l.LoadBalancerID == "" || l.ListenerID == "" {
+				return fmt.Errorf("clb listeners[%d] requires load_balancer_id and listener_id", i)
+			}
+		}
+		return nil
 	case TypeAPIGateway:
 		if t.ServiceID == "" || t.Domain == "" {
 			return fmt.Errorf("apigateway requires service_id and domain")
@@ -138,8 +188,56 @@ func (t *Target) normalize() error {
 		}
 		return nil
 	default:
-		return fmt.Errorf("unknown type %q (want tencent_ssl|apigateway|local|ssh)", t.Type)
+		return fmt.Errorf("unknown type %q (want tencent_ssl|cdn|clb|apigateway|local|ssh)", t.Type)
 	}
+}
+
+func mergeCLBListeners(t *Target) []CLBListener {
+	out := make([]CLBListener, 0, len(t.Listeners)+1)
+	if t.LoadBalancerID != "" || t.ListenerID != "" {
+		out = append(out, CLBListener{
+			LoadBalancerID: strings.TrimSpace(t.LoadBalancerID),
+			ListenerID:     strings.TrimSpace(t.ListenerID),
+			Domain:         strings.TrimSpace(t.Domain),
+		})
+	}
+	for _, l := range t.Listeners {
+		out = append(out, CLBListener{
+			LoadBalancerID: strings.TrimSpace(l.LoadBalancerID),
+			ListenerID:     strings.TrimSpace(l.ListenerID),
+			Domain:         strings.TrimSpace(l.Domain),
+		})
+	}
+	return out
+}
+
+// InstanceID builds DeployCertificateInstance InstanceIdList entry for CLB.
+func (l CLBListener) InstanceID() string {
+	if l.Domain != "" {
+		return l.LoadBalancerID + "|" + l.ListenerID + "|" + l.Domain
+	}
+	return l.LoadBalancerID + "|" + l.ListenerID
+}
+
+func mergeDomains(single string, list []string) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0, len(list)+1)
+	add := func(d string) {
+		d = strings.TrimSpace(d)
+		if d == "" {
+			return
+		}
+		if _, ok := seen[d]; ok {
+			return
+		}
+		seen[d] = struct{}{}
+		out = append(out, d)
+	}
+	add(single)
+	for _, d := range list {
+		add(d)
+	}
+	return out
 }
 
 func isLocalHost(host string) bool {
@@ -154,7 +252,8 @@ func isLocalHost(host string) bool {
 // NeedsTencent reports whether any target talks to Tencent Cloud APIs.
 func NeedsTencent(targets []Target) bool {
 	for _, t := range targets {
-		if t.Type == TypeTencentSSL || t.Type == TypeAPIGateway {
+		switch t.Type {
+		case TypeTencentSSL, TypeCDN, TypeCLB, TypeAPIGateway:
 			return true
 		}
 	}

@@ -14,6 +14,20 @@ targets:
   - name: ssl
     type: tencent_ssl
     alias_prefix: demo-auto
+  - name: cdn-sites
+    type: cdn
+    domain: www.example.com
+    domains:
+      - static.example.com
+  - name: clb-https
+    type: clb
+    region: ap-shanghai
+    load_balancer_id: lb-aaaa
+    listener_id: lbl-bbbb
+    domain: www.example.com
+    listeners:
+      - load_balancer_id: lb-aaaa
+        listener_id: lbl-cccc
   - name: apigw
     type: apigateway
     service_id: service-1
@@ -38,14 +52,23 @@ targets:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(targets) != 4 {
+	if len(targets) != 6 {
 		t.Fatalf("len=%d", len(targets))
 	}
 	if !NeedsTencent(targets) {
 		t.Fatal("expected NeedsTencent")
 	}
-	if targets[2].Type != TypeLocal || targets[3].Type != TypeSSH {
-		t.Fatalf("types: %s %s", targets[2].Type, targets[3].Type)
+	if targets[1].Type != TypeCDN || len(targets[1].Domains) != 2 || targets[1].HTTPSBilling != "off" {
+		t.Fatalf("cdn: type=%s domains=%v billing=%s", targets[1].Type, targets[1].Domains, targets[1].HTTPSBilling)
+	}
+	if targets[2].Type != TypeCLB || len(targets[2].Listeners) != 2 {
+		t.Fatalf("clb: type=%s listeners=%v", targets[2].Type, targets[2].Listeners)
+	}
+	if got := targets[2].Listeners[0].InstanceID(); got != "lb-aaaa|lbl-bbbb|www.example.com" {
+		t.Fatalf("clb instance id=%s", got)
+	}
+	if targets[4].Type != TypeLocal || targets[5].Type != TypeSSH {
+		t.Fatalf("types: %s %s", targets[4].Type, targets[5].Type)
 	}
 }
 

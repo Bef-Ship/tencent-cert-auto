@@ -2,19 +2,33 @@
 
 基于 **Go + lego** 的腾讯云全站 SSL 证书自动化运维服务（Headless / Docker）。
 
-签发与续期后，按 **一份 `deploy.yml`** 顺序部署到所有目标：腾讯云 SSL、API 网关、同机 Nginx、远程轻量/CVM。
+签发与续期后，按 **一份 `deploy.yml`** 顺序部署到所有目标：腾讯云 SSL、CDN、CLB、API 网关、同机 Nginx、远程轻量/CVM。
 
 ## 能力
 
 - DNS-01（DNSPod）申请 / 续期 Let’s Encrypt 泛域名证书
 - 每 24h 检测，剩余 ≤30 天自动续期
 - **统一部署目标**（`deploy.yml`）
-  - `tencent_ssl` — 上传 SSL（CDN 依赖控制台自动推送）
-  - `apigateway` — 更新 API 网关自定义域名证书
+  - `tencent_ssl` — 上传到 SSL 证书平台，拿到 CertificateId
+  - `cdn` — **API** 部署到 CDN（`DeployCertificateInstance`）
+  - `clb` — **API** 部署到 CLB 监听器（`DeployCertificateInstance`）
+  - `apigateway` — **API** 更新 API 网关自定义域名证书
   - `local` — 同机写证书 + reload（不走 SSH）
-  - `ssh` — 远程 SFTP + reload
+  - `ssh` — 远程 **真实 SSH/SFTP** + reload（不是腾讯云 API）
 - 消息推送：企微 / Slack / Lark
 - Docker 常驻、无端口暴露
+
+## 部署方式说明
+
+| 目标类型 | 通道 | 适用场景 |
+|---|---|---|
+| `tencent_ssl` / `cdn` / `clb` / `apigateway` | 腾讯云 CAM API | 云产品证书绑定 |
+| `local` | 本机写文件 | 与本服务同机的 Nginx |
+| `ssh` | SSH 私钥 + SFTP | CVM / 轻量上**自建 Nginx** |
+
+`ssh` **不能**改成「腾讯云 API 模式」：云 API 的证书一键部署面向 CDN/CLB 等云产品，不会往机器上的 `/etc/nginx/ssl` 写文件。自建 Nginx 请继续用 `ssh`（或 `local`）。
+
+CDN / CLB 必须走 API：控制台「自动推送」不覆盖**上传的 Let’s Encrypt 证书**。
 
 ## 快速部署
 
@@ -37,6 +51,20 @@ targets:
     type: tencent_ssl
     alias_prefix: example-wildcard-auto
 
+  - name: cdn-sites
+    type: cdn
+    domains:
+      - www.example.com
+      - static.example.com
+    # https_billing: "off"   # on|off，默认 off
+
+  - name: clb-https
+    type: clb
+    # region: ap-shanghai    # 默认 TENCENT_REGION，须与 CLB 地域一致
+    load_balancer_id: lb-xxxx
+    listener_id: lbl-yyyy
+    domain: www.example.com  # 开启 SNI 时必填；未开 SNI / 四层可省略
+
   - name: apigw-api
     type: apigateway
     service_id: service-xxxx
@@ -48,7 +76,7 @@ targets:
     key_path: /deploy/ssl/privkey.pem
     reload_cmd: "docker exec nginx nginx -s reload"
 
-  - name: develop-api        # 另一台轻量
+  - name: develop-api        # 另一台轻量（SSH，非 API）
     type: ssh
     host: 43.142.106.15
     user: root
@@ -59,65 +87,30 @@ targets:
 ```
 
 - **密钥**放 `.env` / `./ssh`，**目标**放 `deploy.yml`
-- `apigateway` 默认使用本轮 `tencent_ssl` 返回的 CertificateId
+- `cdn` / `clb` / `apigateway` 默认使用本轮 `tencent_ssl` 返回的 CertificateId
 - `local`：同机直接写文件；需要 `docker exec` 时挂载 `docker.sock`
 
 完整字段见 [deploy.example.yml](deploy.example.yml)。
 
+## CAM 最小权限
+
+含 `tencent_ssl` / `cdn` / `clb` / `apigateway` 时需要 `TENCENT_SECRET_ID` / `TENCENT_SECRET_KEY`：
+
+| Action | 用途 |
+|---|---|
+| `ssl:UploadCertificate` | `tencent_ssl` |
+| `ssl:DeployCertificateInstance` | `cdn` / `clb` |
+| `apigateway:ModifySubDomain` | `apigateway` |
+
+首次部署若报角色未授权，在控制台 SSL 证书 → 云资源部署中完成一次授权即可。
+
 ## 环境变量
 
-见 [.env.example](.env.example)。签发必填：`DP_ID`、`DP_KEY`、`LEGO_EMAIL`、`CERT_DOMAIN`。  
-含 `tencent_ssl` / `apigateway` 目标时还需 `TENCENT_SECRET_ID` / `TENCENT_SECRET_KEY`。
+见 [.env.example](.env.example)。签发必填：`DP_ID`、`DP_KEY`、`LEGO_EMAIL`、`CERT_DOMAIN`。
 
-## 目录结构
-
-```
-cmd/tencent-cert-auto/
-internal/cert/       # lego 签发 / 续期
-internal/deploy/     # 统一部署（ssl / apigw / local / ssh）
-internal/notify/     # 消息推送
-internal/app/        # 调度
-deploy.example.yml   # 部署目标示例
-.github/workflows/   # 推送镜像到腾讯云 CCR
-```
-
-## CI：推送到腾讯云 CCR
-
-推送到 `main`/`master`、打 `v*` tag，或手动 `workflow_dispatch` 时，Actions 会构建多架构镜像并推送到腾讯云容器镜像服务（个人版 CCR）。
-
-### 1. 控制台准备
-
-1. 开通 [容器镜像服务](https://console.cloud.tencent.com/tcr) 个人版，初始化登录密码  
-2. 创建命名空间（Namespace）
-
-### 2. GitHub 仓库配置
-
-**Secrets**（Settings → Secrets and variables → Actions → Secrets）：
-
-| Name | 说明 |
-|------|------|
-| `CCR_USERNAME` | 腾讯云账号 UIN（数字账号 ID） |
-| `CCR_PASSWORD` | CCR 登录密码（控制台初始化的那个） |
-
-**Variables**（同页 → Variables）：
-
-| Name | 必填 | 说明 |
-|------|------|------|
-| `CCR_NAMESPACE` | 是 | 镜像命名空间 |
-| `CCR_REGISTRY` | 否 | 默认 `ccr.ccs.tencentyun.com`；企业版填实例域名 |
-| `CCR_IMAGE_NAME` | 否 | 默认 `tencent-cert-auto` |
-
-### 3. 镜像地址示例
+### 镜像地址示例
 
 ```text
-ccr.ccs.tencentyun.com/<CCR_NAMESPACE>/tencent-cert-auto:latest
-ccr.ccs.tencentyun.com/<CCR_NAMESPACE>/tencent-cert-auto:sha-<short>
-ccr.ccs.tencentyun.com/<CCR_NAMESPACE>/tencent-cert-auto:v1.0.0   # tag 推送时
-```
-
-服务器拉取：
-
-```bash
-docker login ccr.ccs.tencentyun.com -u <UIN>
-docker pull ccr.ccs.tencentyun.com/<namespace>/tencent-cert-auto:latest
+ccr.ccs.tencentyun.com/befship/tencent-cert-auto:latest
+ccr.ccs.tencentyun.com/befship/tencent-cert-auto:v1.0.0
 ```
